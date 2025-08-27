@@ -6,6 +6,7 @@ import { MongoDBAtlasVectorSearch } from '@langchain/mongodb';
 import { SentenceTransformerEmbeddings } from '../api/bookEmbedding';
 import mongoose from 'mongoose';
 import { callOpenRouter } from '../utils/openRouter';
+import { Document } from '@langchain/core/documents';
 
 // Generate task based on user query
 export const generateTask = async (req: Request, res: Response, next: NextFunction) => {
@@ -21,40 +22,82 @@ export const generateTask = async (req: Request, res: Response, next: NextFuncti
     // Initialize embeddings model
     const embeddingModel = new SentenceTransformerEmbeddings();
 
-    // Search for relevant books
+    // Search for relevant books with similarity scores
     const bookVectorIndex = new MongoDBAtlasVectorSearch(embeddingModel, {
       collection: mongoose.connection.collection("booksVectors"),
       indexName: "vector_index",
     });
 
-    const bookResults = await bookVectorIndex.similaritySearch(query, maxBooks);
+    // Get book embeddings for the query to use with similaritySearchVectorWithScore
+    const queryEmbedding = await embeddingModel.embedQuery(query);
+    const bookResultsWithScores = await bookVectorIndex.similaritySearchVectorWithScore(
+      queryEmbedding, 
+      maxBooks * 2 // Get more results to filter by threshold
+    );
 
-    // Search for relevant MCQs
+    // Filter books by similarity threshold (0.7 = 70% similarity)
+    const MIN_SIMILARITY_THRESHOLD = 0.7;
+    const filteredBookResults = bookResultsWithScores
+      .filter(([_, score]: [Document, number]) => score >= MIN_SIMILARITY_THRESHOLD)
+      .slice(0, maxBooks)
+      .map(([doc]: [Document, number]) => doc);
+
+    // Search for relevant MCQs with similarity scores
     const mcqVectorIndex = new MongoDBAtlasVectorSearch(embeddingModel, {
       collection: mongoose.connection.collection("mcqVectors"),
       indexName: "vector_index",
     });
 
-    const mcqResults = await mcqVectorIndex.similaritySearch(query, maxQuestions);
+    const mcqResultsWithScores = await mcqVectorIndex.similaritySearchVectorWithScore(
+      queryEmbedding,
+      maxQuestions * 3 // Get more results to filter by threshold and chapter
+    );
 
-    // Get full document details for books
+    // Filter MCQs by similarity threshold and optionally by chapter context
+    const filteredMcqResults = mcqResultsWithScores
+      .filter(([doc, score]: [Document, number]) => {
+        // Minimum similarity threshold
+        if (score < MIN_SIMILARITY_THRESHOLD) return false;
+        
+        // If we have book results, prioritize questions from the same chapter
+        if (filteredBookResults.length > 0) {
+          const bookChapter = filteredBookResults[0].metadata.chapter;
+          const mcqChapter = doc.metadata.chapter;
+          return bookChapter === mcqChapter || score >= 0.85; // Higher threshold for different chapters
+        }
+        
+        return true;
+      })
+      .slice(0, maxQuestions)
+      .map(([doc]: [Document, number]) => doc);
+
+    // Get full document details for books with similarity scores
     const bookDetails = await Promise.all(
-      bookResults.map(async (result) => {
+      filteredBookResults.map(async (result: Document) => {
         const book = await Book.findById(result.metadata._id);
+        const similarityScore = bookResultsWithScores.find(
+          ([doc]: [Document, number]) => doc.metadata._id === result.metadata._id
+        )?.[1] || 0;
+        
         return {
           _id: result.metadata._id,
           title: book?.title || result.metadata.title,
           pageNumber: book?.pageNumber || result.metadata.pageNumber,
           content: book?.content || result.pageContent,
-          chapter: book?.chapter || result.metadata.chapter
+          chapter: book?.chapter || result.metadata.chapter,
+          similarityScore: Math.round(similarityScore * 100) // Convert to percentage
         };
       })
     );
 
-    // Get full document details for MCQs
+    // Get full document details for MCQs with similarity scores
     const mcqDetails = await Promise.all(
-      mcqResults.map(async (result) => {
+      filteredMcqResults.map(async (result: Document) => {
         const mcq = await MCQ.findById(result.metadata._id);
+        const similarityScore = mcqResultsWithScores.find(
+          ([doc]: [Document, number]) => doc.metadata._id === result.metadata._id
+        )?.[1] || 0;
+        
         return {
           _id: result.metadata._id,
           question: mcq?.question || result.pageContent.split('Options:')[0],
@@ -62,7 +105,8 @@ export const generateTask = async (req: Request, res: Response, next: NextFuncti
           correctAnswer: mcq?.correctAnswer || '',
           chapter: mcq?.chapter || result.metadata.chapter,
           year: mcq?.year || result.metadata.year,
-          questionNumber: mcq?.questionNumber || result.metadata.questionNumber
+          questionNumber: mcq?.questionNumber || result.metadata.questionNumber,
+          similarityScore: Math.round(similarityScore * 100) // Convert to percentage
         };
       })
     );
@@ -132,17 +176,19 @@ Focus on making it extremely clear and engaging for a student who is struggling 
           reference: `For additional details, refer to page ${bookDetails[0].pageNumber} in Chapter: ${bookDetails[0].chapter}`,
           isAIExplanation: isAIExplanation
         } : undefined,
-        questions: await Promise.all(mcqDetails.map(async (mcq) => {
-          // Generate better explanation using Gemini API if available
+        questions: await Promise.all(mcqDetails.map(async (mcq: any) => {
+          // Generate explanation for each MCQ
           let explanation = `This question tests your understanding of ${mcq.chapter}. The correct answer is "${mcq.correctAnswer}" because it best addresses the concept being tested. Review the related content to understand why this is the correct choice.`;
           
           if (process.env.OPENROUTER_API_KEY) {
             try {
-              const prompt = `As an expert ICT tutor, help a student understand this concept through this question:
+              const prompt = `As an expert ICT tutor, explain this question from Chapter "${mcq.chapter}":
 
 Question: "${mcq.question}"
-Options: ${mcq.options.map((opt, idx) => `${idx + 1}. ${opt}`).join('\n')}
+Options: ${mcq.options.map((opt: string, idx: number) => `${idx + 1}. ${opt}`).join('\n')}
 Correct Answer: ${mcq.correctAnswer}
+Question Number: ${mcq.questionNumber}
+Year: ${mcq.year}
 
 Create a detailed explanation that:
 1. Explains why "${mcq.correctAnswer}" is the correct answer using clear, simple language
@@ -152,9 +198,12 @@ Create a detailed explanation that:
 5. Gives a memorable tip or trick to help remember this specific concept
 6. Connects this topic to its importance in ${mcq.chapter}
 
-Remember, you're helping a student who's asking about ${query} - make your explanation engaging and crystal clear.`;
+Make your explanation engaging and crystal clear. Focus on helping the student who asked about: ${query}`;
               
-              console.log("DEBUG: Sending request to OpenRouter API for MCQ explanation");
+              console.log(`DEBUG: Generating explanation for Question ${mcq.questionNumber} (${mcq.year})`);
+              
+              // Add delay between requests to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 1000));
               
               const aiResponse = await callOpenRouter(prompt, {
                 max_tokens: 1500,
@@ -164,7 +213,10 @@ Remember, you're helping a student who's asking about ${query} - make your expla
               
               if (aiResponse && aiResponse.trim()) {
                 explanation = aiResponse;
-                console.log("DEBUG: Successfully generated AI explanation for MCQ");
+                console.log(`DEBUG: Successfully generated explanation for Question ${mcq.questionNumber}`);
+              } else {
+                console.log(`DEBUG: No explanation generated for Question ${mcq.questionNumber}, using fallback`);
+                explanation = `For Question ${mcq.questionNumber} (${mcq.year}): The correct answer is "${mcq.correctAnswer}". This question from Chapter "${mcq.chapter}" tests your understanding of key concepts. Review the chapter content and provided examples to better understand this topic.`;
               }
             } catch (error) {
               console.error('DEBUG: Error generating explanation with OpenRouter:', error);
