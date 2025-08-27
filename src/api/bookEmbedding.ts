@@ -14,7 +14,7 @@ interface BookDocument extends mongoose.Document {
   chapter: string;
 }
 
-class SentenceTransformerEmbeddings extends Embeddings {
+export class SentenceTransformerEmbeddings extends Embeddings {
   constructor(params?: ConstructorParameters<typeof Embeddings>[0]) {
     super(params || {});
   }
@@ -33,11 +33,11 @@ class SentenceTransformerEmbeddings extends Embeddings {
       
       try {
         const batchEmbeddings = await new Promise<number[][]>((resolve, reject) => {
-          const pythonProcess = spawn(
-            "scripts/venv/Scripts/python.exe",
+        const pythonProcess = spawn(
+            ".venv/Scripts/python.exe",
             ["scripts/generate_embeddings.py"],
             { cwd: process.cwd() }
-          );
+        );
 
           pythonProcess.stdin.write(JSON.stringify(batch));
           pythonProcess.stdin.end();

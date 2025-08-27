@@ -13,7 +13,7 @@ const child_process_1 = require("child_process");
 // Custom Embeddings class for sentence-transformers
 class SentenceTransformerEmbeddings extends embeddings_1.Embeddings {
     constructor(params) {
-        super(params || {});
+        super(params);
     }
     async embedDocuments(texts) {
         return new Promise((resolve, reject) => {
@@ -38,8 +38,7 @@ class SentenceTransformerEmbeddings extends embeddings_1.Embeddings {
                         resolve(embeddings);
                     }
                     catch (e) {
-                        const errorMessage = e instanceof Error ? e.message : 'Unknown error occurred';
-                        reject(new Error(`Failed to parse embeddings: ${errorMessage}`));
+                        reject(new Error(`Failed to parse embeddings: ${e.message}`));
                     }
                 }
                 else {
