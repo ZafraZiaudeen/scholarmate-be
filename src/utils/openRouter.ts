@@ -50,6 +50,11 @@ export async function callOpenRouter(prompt: string, options: {
     return response.data.choices[0]?.message?.content || '';
   } catch (error) {
     console.error('Error calling OpenRouter:', error);
+    // Log more details about the error
+    if (error instanceof Error) {
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+    }
     throw new Error('Failed to call OpenRouter API');
   }
 }

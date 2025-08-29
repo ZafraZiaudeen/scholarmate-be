@@ -2,18 +2,23 @@ import { Request, Response, NextFunction } from 'express';
 import Task from '../infrastructure/schemas/Task';
 import MCQ from '../infrastructure/schemas/Questions';
 import Book from '../infrastructure/schemas/Book';
+import Chat from '../infrastructure/schemas/Chat';
 import { MongoDBAtlasVectorSearch } from '@langchain/mongodb';
 import { SentenceTransformerEmbeddings } from '../api/bookEmbedding';
 import mongoose from 'mongoose';
 import { callOpenRouter } from '../utils/openRouter';
 import { Document } from '@langchain/core/documents';
 
-// Generate task based on user query
+// Generate task based on user query (but save as Chat initially)
 export const generateTask = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { query, section, maxBooks = 3, maxQuestions = 5 } = req.body;
-    // For testing purposes, use a default user ID if authentication is not available
-    const userId = req.user?.id || "test-user-123";
+    // Use the authenticated user's ID
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "User authentication required" });
+    }
 
     if (!query) {
       return res.status(400).json({ error: "query is required" });
@@ -41,6 +46,13 @@ export const generateTask = async (req: Request, res: Response, next: NextFuncti
       .filter(([_, score]: [Document, number]) => score >= MIN_SIMILARITY_THRESHOLD)
       .slice(0, maxBooks)
       .map(([doc]: [Document, number]) => doc);
+
+    // Check if no related content found
+    if (filteredBookResults.length === 0) {
+      return res.status(404).json({ 
+        error: "This topic is not related to the module. Please try another topic related to ICT Grade 11 curriculum." 
+      });
+    }
 
     // Search for relevant MCQs with similarity scores
     const mcqVectorIndex = new MongoDBAtlasVectorSearch(embeddingModel, {
@@ -91,7 +103,7 @@ export const generateTask = async (req: Request, res: Response, next: NextFuncti
     );
 
     // Get full document details for MCQs with similarity scores
-    const mcqDetails = await Promise.all(
+    let mcqDetails: any[] = await Promise.all(
       filteredMcqResults.map(async (result: Document) => {
         const mcq = await MCQ.findById(result.metadata._id);
         const similarityScore = mcqResultsWithScores.find(
@@ -110,6 +122,86 @@ export const generateTask = async (req: Request, res: Response, next: NextFuncti
         };
       })
     );
+
+    // Check if no past paper questions found and generate practice questions
+    let practiceQuestions: any[] = [];
+    let isPracticeQuestions = false;
+    
+    if (mcqDetails.length === 0 && process.env.OPENROUTER_API_KEY) {
+      try {
+        console.log("DEBUG: No past paper questions found, generating practice questions");
+        
+        const prompt = `As an expert ICT tutor, create 3-5 practice questions based on the following topic: "${query}"
+        
+Book Content Reference from Chapter "${bookDetails[0].chapter}", Page ${bookDetails[0].pageNumber}:
+${bookDetails[0].content}
+
+Create practice questions that:
+1. Test understanding of key concepts from the chapter
+2. Include 4 multiple-choice options (A, B, C, D)
+3. Provide the correct answer with a brief explanation
+4. Are appropriate for Grade 11 ICT students
+5. Cover different aspects of the topic
+
+Format your response as a JSON array with each question having:
+- question: the question text
+- options: array of 4 options
+- correctAnswer: the letter of the correct option (A, B, C, or D)
+- explanation: brief explanation of why the answer is correct
+
+Example format:
+[
+  {
+    "question": "What is the main purpose of a database?",
+    "options": ["To store and organize data", "To create websites", "To play games", "To send emails"],
+    "correctAnswer": "A",
+    "explanation": "Databases are designed to store, organize, and manage large amounts of data efficiently."
+  }
+]`;
+        
+        const aiResponse = await callOpenRouter(prompt, {
+          max_tokens: 2000,
+          temperature: 0.7,
+          model: "deepseek/deepseek-r1:free"
+        });
+        
+        if (aiResponse && aiResponse.trim()) {
+          try {
+            practiceQuestions = JSON.parse(aiResponse);
+            isPracticeQuestions = true;
+            console.log("DEBUG: Successfully generated practice questions");
+          } catch (parseError) {
+            console.error("DEBUG: Failed to parse AI-generated questions:", parseError);
+            // Fallback to simple practice questions
+            practiceQuestions = [
+              {
+                question: `Practice question about ${query}`,
+                options: ["Option A", "Option B", "Option C", "Option D"],
+                correctAnswer: "A",
+                explanation: "This is a practice question. Review the chapter content to understand the concepts better."
+              }
+            ];
+            isPracticeQuestions = true;
+          }
+        }
+      } catch (error) {
+        console.error("DEBUG: Error generating practice questions:", error);
+      }
+    }
+
+    if (isPracticeQuestions) {
+      mcqDetails = practiceQuestions.map(pq => ({
+        _id: null,
+        question: pq.question,
+        options: pq.options,
+        correctAnswer: pq.correctAnswer,
+        chapter: bookDetails[0]?.chapter || 'Generated',
+        year: null,
+        questionNumber: null,
+        similarityScore: 100,
+        explanation: pq.explanation // Pre-generated explanation
+      }));
+    }
 
     // Generate AI explanation for book content if available
     let bookContentToUse = "";
@@ -159,13 +251,16 @@ Focus on making it extremely clear and engaging for a student who is struggling 
       }
     }
 
-    // Create a new task
-    const newTask = new Task({
+    // Create a new chat with task content
+    const newChat = new Chat({
       userId,
-      title: `Study Task: ${query}`,
-      description: `Personalized learning task generated based on your interest in: ${query}`,
-      type: 'learning',
-      section: section || 'General Web Development',
+      query,
+      response: `Personalized learning content generated based on your interest in: ${query}`,
+      contentExplanation: bookContentToUse,
+      answerExplanation: '', // Can be used if needed, but structured content is in content field
+      savedAsTask: false,
+      taskId: null,
+      isTask: true,
       content: {
         bookContent: bookDetails.length > 0 ? {
           bookId: bookDetails[0]._id,
@@ -173,14 +268,13 @@ Focus on making it extremely clear and engaging for a student who is struggling 
           pageNumber: bookDetails[0].pageNumber,
           content: bookContentToUse,
           chapter: bookDetails[0].chapter,
-          reference: `For additional details, refer to page ${bookDetails[0].pageNumber} in Chapter: ${bookDetails[0].chapter}`,
-          isAIExplanation: isAIExplanation
+          // Note: reference and isAIExplanation are not in schema, but can be added to content if needed
         } : undefined,
         questions: await Promise.all(mcqDetails.map(async (mcq: any) => {
-          // Generate explanation for each MCQ
-          let explanation = `This question tests your understanding of ${mcq.chapter}. The correct answer is "${mcq.correctAnswer}" because it best addresses the concept being tested. Review the related content to understand why this is the correct choice.`;
+          // Generate explanation for each MCQ if not already present (e.g., for practice questions)
+          let explanation = mcq.explanation || `This question tests your understanding of ${mcq.chapter}. The correct answer is "${mcq.correctAnswer}" because it best addresses the concept being tested. Review the related content to understand why this is the correct choice.`;
           
-          if (process.env.OPENROUTER_API_KEY) {
+          if (!mcq.explanation && process.env.OPENROUTER_API_KEY) {
             try {
               const prompt = `As an expert ICT tutor, explain this question from Chapter "${mcq.chapter}":
 
@@ -235,20 +329,14 @@ Make your explanation engaging and crystal clear. Focus on helping the student w
             completed: false
           };
         }))
-      },
-      progress: {
-        completed: false,
-        score: 0,
-        totalQuestions: mcqDetails.length,
-        correctAnswers: 0
       }
     });
 
-    await newTask.save();
+    await newChat.save();
 
     res.status(201).json({
-      message: "Task created successfully",
-      task: newTask,
+      message: "Task content generated and saved to chat successfully",
+      task: newChat, // Returning chat as 'task' for compatibility
       searchResults: {
         bookResults: bookDetails,
         mcqResults: mcqDetails
@@ -289,8 +377,12 @@ export const getTaskById = async (req: Request, res: Response, next: NextFunctio
 export const updateTaskProgress = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { taskId, questionId, isCorrect, completed } = req.body;
-    // For testing purposes, use a default user ID if authentication is not available
-    const userId = req.user?.id || "test-user-123";
+    // Use the authenticated user's ID
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({ error: "User authentication required" });
+    }
 
     const task = await Task.findOne({ _id: taskId, userId });
     if (!task) {
@@ -343,6 +435,117 @@ export const deleteTask = async (req: Request, res: Response, next: NextFunction
     }
     res.status(200).json({ message: "Task deleted successfully" });
   } catch (error) {
+    next(error);
+  }
+};
+
+// Get chat history for a specific user
+export const getChatHistory = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    const chats = await Chat.find({ userId })
+      .sort({ timestamp: -1 })
+      .limit(50); // Limit to last 50 chats
+
+    res.status(200).json({
+      success: true,
+      data: chats
+    });
+  } catch (error) {
+    console.error('Error fetching chat history:', error);
+    next(error);
+  }
+};
+
+// Get specific chat message by ID
+export const getChatById = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { chatId } = req.params;
+    
+    if (!chatId) {
+      return res.status(400).json({ error: "Chat ID is required" });
+    }
+
+    const chat = await Chat.findById(chatId);
+    
+    if (!chat) {
+      return res.status(404).json({ error: "Chat message not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: chat
+    });
+  } catch (error) {
+    console.error('Error fetching chat message:', error);
+    next(error);
+  }
+};
+
+// Save chat as task
+export const saveChatAsTask = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { chatId } = req.params;
+    const userId = req.user?.id; // Get user ID from authenticated user
+
+    if (!userId) {
+      return res.status(401).json({ error: "User authentication required" });
+    }
+
+    // Find the chat
+    const chat = await Chat.findById(chatId);
+    
+    if (!chat) {
+      return res.status(404).json({ error: "Chat not found" });
+    }
+
+    if (chat.savedAsTask) {
+      return res.status(400).json({ error: "Chat already saved as task" });
+    }
+
+    // Create a new task from the chat content
+    const task = new Task({
+      userId,
+      title: `Study Task: ${chat.query}`,
+      description: `Task created from chat conversation about: ${chat.query}`,
+      type: 'learning',
+      section: 'AI Generated',
+      content: chat.isTask && chat.content ? chat.content : {
+        questions: [{
+          question: chat.query,
+          options: ['Option 1', 'Option 2', 'Option 3', 'Option 4'],
+          correctAnswer: 'Option 1',
+          explanation: chat.response || "This task was created from your chat conversation. Review the content to understand the concepts better.",
+          completed: false
+        }]
+      },
+      progress: {
+        completed: false,
+        score: 0,
+        totalQuestions: chat.isTask && chat.content ? (chat.content.questions?.length || 0) : 1,
+        correctAnswers: 0
+      }
+    });
+
+    await task.save();
+
+    // Update chat to mark it as saved
+    chat.savedAsTask = true;
+    chat.taskId = task._id;
+    await chat.save();
+
+    res.status(201).json({
+      success: true,
+      message: "Chat successfully saved as task",
+      data: task
+    });
+  } catch (error) {
+    console.error('Error saving chat as task:', error);
     next(error);
   }
 };
