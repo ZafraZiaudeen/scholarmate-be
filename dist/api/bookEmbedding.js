@@ -26,7 +26,7 @@ class SentenceTransformerEmbeddings extends embeddings_1.Embeddings {
             });
             try {
                 const batchEmbeddings = await new Promise((resolve, reject) => {
-                    const pythonProcess = (0, child_process_1.spawn)("scripts/venv/Scripts/python.exe", ["scripts/generate_embeddings.py"], { cwd: process.cwd() });
+                    const pythonProcess = (0, child_process_1.spawn)(".venv/Scripts/python.exe", ["scripts/generate_embeddings.py"], { cwd: process.cwd() });
                     pythonProcess.stdin.write(JSON.stringify(batch));
                     pythonProcess.stdin.end();
                     let output = "";

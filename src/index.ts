@@ -10,6 +10,9 @@ import mcqRouter from "./api/mcs";
 import bookRouter from "./api/book";
 import taskRouter from "./api/task";
 import openRouter from "./api/openRouter";
+import paperRouter from "./api/paper";
+import userRouter from "./api/user";
+import contactRouter from "./api/contact";
 import { extractUserInfo } from "./api/middlewares/user-extraction-middleware";
 
 // Create an Express instance
@@ -27,6 +30,9 @@ app.use("/api/book", bookRouter);
 app.use("/api/mcq", mcqRouter);
 app.use("/api/task", taskRouter);
 app.use("/api/openrouter", openRouter);
+app.use("/api/paper", paperRouter);
+app.use("/api/user", userRouter);
+app.use("/api/contact", contactRouter);
 
 
 app.use(globalErrorHandlingMiddleware);
