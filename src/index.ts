@@ -13,6 +13,11 @@ import openRouter from "./api/openRouter";
 import paperRouter from "./api/paper";
 import userRouter from "./api/user";
 import contactRouter from "./api/contact";
+import analyticsRouter from "./api/analytics";
+import settingsRouter from "./api/settings";
+import youtubeRouter from "./api/youtube";
+import gamificationRouter from "./api/gamification";
+import videoManagementRouter from "./api/videoManagement";
 import { extractUserInfo } from "./api/middlewares/user-extraction-middleware";
 
 // Create an Express instance
@@ -33,6 +38,11 @@ app.use("/api/openrouter", openRouter);
 app.use("/api/paper", paperRouter);
 app.use("/api/user", userRouter);
 app.use("/api/contact", contactRouter);
+app.use("/api/analytics", analyticsRouter);
+app.use("/api/settings", settingsRouter);
+app.use("/api/youtube", youtubeRouter);
+app.use("/api/gamification", gamificationRouter);
+app.use("/api/video-management", videoManagementRouter);
 
 
 app.use(globalErrorHandlingMiddleware);

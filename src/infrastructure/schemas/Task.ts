@@ -40,7 +40,8 @@ const taskSchema = new mongoose.Schema({
       completed: {
         type: Boolean,
         default: false
-      }
+      },
+      userAnswer: String // Store the user's selected answer
     }]
   },
   progress: {

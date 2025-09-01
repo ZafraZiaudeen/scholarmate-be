@@ -3,11 +3,128 @@ import Task from '../infrastructure/schemas/Task';
 import MCQ from '../infrastructure/schemas/Questions';
 import Book from '../infrastructure/schemas/Book';
 import Chat from '../infrastructure/schemas/Chat';
+import { UserStats } from '../infrastructure/schemas/Achievement';
 import { MongoDBAtlasVectorSearch } from '@langchain/mongodb';
 import { SentenceTransformerEmbeddings } from '../api/bookEmbedding';
 import mongoose from 'mongoose';
 import { callOpenRouter } from '../utils/openRouter';
 import { Document } from '@langchain/core/documents';
+import { checkAndUnlockAchievementsInternal } from './gamification';
+
+// Helper function to update user stats and check achievements
+const updateUserStatsAndAchievements = async (userId: string, taskCompleted: boolean, accuracy?: number, studyTime?: number, perfectScore?: boolean) => {
+  try {
+    // Get or create user stats
+    let userStats = await UserStats.findOne({ userId });
+    
+    if (!userStats) {
+      userStats = new UserStats({
+        userId,
+        totalPoints: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        tasksCompleted: 0,
+        averageAccuracy: 0,
+        totalStudyTime: 0,
+        videosWatched: 0,
+        perfectScores: 0,
+        lastActivityDate: new Date(),
+        weeklyGoal: {
+          target: 5,
+          current: 0,
+          weekStart: new Date()
+        },
+        monthlyGoal: {
+          target: 20,
+          current: 0,
+          monthStart: new Date()
+        },
+        badges: [],
+        level: 1,
+        experiencePoints: 0
+      });
+    }
+
+    const today = new Date();
+    const lastActivity = new Date(userStats.lastActivityDate);
+    
+    // Update streak
+    const daysDiff = Math.floor((today.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysDiff === 1) {
+      userStats.currentStreak += 1;
+      userStats.longestStreak = Math.max(userStats.longestStreak, userStats.currentStreak);
+    } else if (daysDiff > 1) {
+      userStats.currentStreak = 1;
+    }
+    
+    // Update stats if task was completed
+    if (taskCompleted) {
+      userStats.tasksCompleted += 1;
+      
+      // Award base points for task completion
+      const basePoints = 10;
+      userStats.totalPoints += basePoints;
+      userStats.experiencePoints += basePoints;
+      
+      // Update accuracy (running average)
+      if (accuracy !== undefined) {
+        const totalTasks = userStats.tasksCompleted;
+        userStats.averageAccuracy = ((userStats.averageAccuracy * (totalTasks - 1)) + accuracy) / totalTasks;
+      }
+      
+      // Check for perfect score
+      if (perfectScore) {
+        userStats.perfectScores += 1;
+        // Award bonus points for perfect score
+        userStats.totalPoints += 20;
+        userStats.experiencePoints += 20;
+      }
+      
+      // Update study time if provided
+      if (studyTime) {
+        userStats.totalStudyTime += studyTime;
+      }
+      
+      // Update weekly/monthly goals
+      const weekStart = new Date(userStats.weeklyGoal.weekStart);
+      const weeksDiff = Math.floor((today.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24 * 7));
+      if (weeksDiff >= 1) {
+        userStats.weeklyGoal.current = 0;
+        userStats.weeklyGoal.weekStart = today;
+      }
+      userStats.weeklyGoal.current += 1;
+      
+      const monthStart = new Date(userStats.monthlyGoal.monthStart);
+      const monthsDiff = today.getMonth() - monthStart.getMonth() + (12 * (today.getFullYear() - monthStart.getFullYear()));
+      if (monthsDiff >= 1) {
+        userStats.monthlyGoal.current = 0;
+        userStats.monthlyGoal.monthStart = today;
+      }
+      userStats.monthlyGoal.current += 1;
+    }
+    
+    userStats.lastActivityDate = today;
+    
+    // Calculate level from experience points
+    userStats.level = Math.floor(Math.sqrt(userStats.experiencePoints / 100)) + 1;
+    
+    await userStats.save();
+    
+    // Check for new achievements by calling the gamification system
+    if (taskCompleted) {
+      try {
+        await checkAndUnlockAchievementsInternal(userId);
+      } catch (error) {
+        console.error('Error checking achievements:', error);
+      }
+    }
+    
+    return userStats;
+  } catch (error) {
+    console.error('Error updating user stats:', error);
+    return null;
+  }
+};
 
 // Generate task based on user query (but save as Chat initially)
 export const generateTask = async (req: Request, res: Response, next: NextFunction) => {
@@ -376,7 +493,7 @@ export const getTaskById = async (req: Request, res: Response, next: NextFunctio
 // Update task progress
 export const updateTaskProgress = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { taskId, questionId, isCorrect, completed } = req.body;
+    const { taskId, questionId, isCorrect, completed, userAnswer } = req.body;
     // Use the authenticated user's ID
     const userId = req.user?.id;
 
@@ -392,14 +509,40 @@ export const updateTaskProgress = async (req: Request, res: Response, next: Next
     // Use type assertion to handle Mongoose document arrays
     const taskDoc = task as any;
 
+    // Initialize progress if not exists
+    if (!taskDoc.progress) {
+      taskDoc.progress = {
+        completed: false,
+        score: 0,
+        totalQuestions: taskDoc.content?.questions?.length || 0,
+        correctAnswers: 0
+      };
+    }
+
+    // Update total questions count if not set
+    if (taskDoc.progress.totalQuestions === 0 && taskDoc.content?.questions) {
+      taskDoc.progress.totalQuestions = taskDoc.content.questions.length;
+    }
+
     if (questionId && isCorrect !== undefined) {
       // Update specific question completion
       const questions = taskDoc.content?.questions || [];
-      const questionIndex = questions.findIndex((q: any) => q.mcqId?.toString() === questionId);
+      const questionIndex = questions.findIndex((q: any) =>
+        q.mcqId?.toString() === questionId || q._id?.toString() === questionId
+      );
+      
       if (questionIndex !== -1) {
-        questions[questionIndex].completed = true;
-        if (isCorrect) {
-          taskDoc.progress.correctAnswers += 1;
+        // Store the user's answer
+        if (userAnswer !== undefined) {
+          questions[questionIndex].userAnswer = userAnswer;
+        }
+        
+        // Only update if not already completed to avoid double counting
+        if (!questions[questionIndex].completed) {
+          questions[questionIndex].completed = true;
+          if (isCorrect) {
+            taskDoc.progress.correctAnswers += 1;
+          }
         }
       }
     }
@@ -408,19 +551,52 @@ export const updateTaskProgress = async (req: Request, res: Response, next: Next
       taskDoc.progress.completed = completed;
       if (completed) {
         taskDoc.progress.completedAt = new Date();
-        taskDoc.progress.score = taskDoc.progress.totalQuestions > 0 
-          ? (taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100 
+        // Calculate final score
+        taskDoc.progress.score = taskDoc.progress.totalQuestions > 0
+          ? Math.round((taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100)
+          : 0;
+      }
+    }
+
+    // Auto-complete task if all questions are answered
+    if (taskDoc.content?.questions && taskDoc.content.questions.length > 0) {
+      const completedQuestions = taskDoc.content.questions.filter((q: any) => q.completed).length;
+      if (completedQuestions === taskDoc.content.questions.length && !taskDoc.progress.completed) {
+        taskDoc.progress.completed = true;
+        taskDoc.progress.completedAt = new Date();
+        taskDoc.progress.score = taskDoc.progress.totalQuestions > 0
+          ? Math.round((taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100)
           : 0;
       }
     }
 
     await taskDoc.save();
 
+    // Update user stats and check for achievements if task was completed
+    if (taskDoc.progress.completed) {
+      const accuracy = taskDoc.progress.totalQuestions > 0
+        ? (taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100
+        : 0;
+      const isPerfectScore = accuracy === 100;
+      
+      // Estimate study time (you can make this more sophisticated)
+      const estimatedStudyTime = taskDoc.content?.questions?.length * 2 || 5; // 2 minutes per question
+      
+      await updateUserStatsAndAchievements(
+        userId,
+        true, // task completed
+        accuracy,
+        estimatedStudyTime,
+        isPerfectScore
+      );
+    }
+
     res.status(200).json({
       message: "Task progress updated successfully",
       task: taskDoc
     });
   } catch (error) {
+    console.error('Error updating task progress:', error);
     next(error);
   }
 };
