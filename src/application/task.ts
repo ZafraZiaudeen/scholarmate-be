@@ -11,7 +11,6 @@ import { callOpenRouter } from '../utils/openRouter';
 import { Document } from '@langchain/core/documents';
 import { checkAndUnlockAchievementsInternal } from './gamification';
 
-// Helper function to update user stats and check achievements
 const updateUserStatsAndAchievements = async (userId: string, taskCompleted: boolean, accuracy?: number, studyTime?: number, perfectScore?: boolean) => {
   try {
     // Get or create user stats
@@ -476,24 +475,75 @@ export const getUserTasks = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-// Get specific task
+// Get specific task - FIXED to handle both Task and Chat objects
 export const getTaskById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { taskId } = req.params;
-    const task = await Task.findById(taskId);
+    
+    // Use 'any' to allow assigning either Task document, Chat document, or plain object
+    let task: any = await Task.findById(taskId);
+    
+    // If not found as Task, try to find as Chat with isTask: true
+    if (!task) {
+      const chat = await Chat.findById(taskId);
+      if (chat && chat.isTask) {
+        // Convert Chat to Task format for frontend compatibility
+        task = {
+          _id: chat._id,
+          userId: chat.userId,
+          title: `Study Task: ${chat.query}`,
+          description: `Task created from: ${chat.query}`,
+          type: 'learning',
+          section: 'AI Generated',
+          content: chat.content || { questions: [] },
+          progress: {
+            completed: (chat as any).completed || false,
+            score: 0,
+            totalQuestions: chat.content?.questions?.length || 0,
+            correctAnswers: 0,
+            timeSpent: (chat as any).timeSpent || 0,
+            pointsEarned: 0
+          },
+          priority: 'medium',
+          createdAt: chat.timestamp,
+          updatedAt: chat.timestamp
+        };
+        
+        // Calculate progress from completed questions if content exists
+        if (chat.content?.questions) {
+          const completedQuestions = chat.content.questions.filter((q: any) => q.completed);
+          const correctAnswers = completedQuestions.filter((q: any) => {
+            if (!q.userAnswer || !q.correctAnswer) return false;
+            const userAnswer = q.userAnswer.toString().trim();
+            const correctAnswer = q.correctAnswer.toString().replace(/[()]/g, "").trim();
+            return userAnswer === correctAnswer;
+          });
+          
+          task.progress.correctAnswers = correctAnswers.length;
+          task.progress.pointsEarned = correctAnswers.length * 10;
+          task.progress.score = task.progress.totalQuestions > 0 
+            ? Math.round((correctAnswers.length / task.progress.totalQuestions) * 100) 
+            : 0;
+        }
+      }
+    }
+    
     if (!task) {
       return res.status(404).json({ error: "Task not found" });
     }
-    res.status(200).json({ task });
+    
+    res.status(200).json({ 
+      success: true,
+      data: task 
+    });
   } catch (error) {
     next(error);
   }
 };
 
-// Update task progress
 export const updateTaskProgress = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { taskId, questionId, isCorrect, completed, userAnswer } = req.body;
+    const { taskId, questionId, isCorrect, completed, userAnswer, timeSpent } = req.body;
     // Use the authenticated user's ID
     const userId = req.user?.id;
 
@@ -501,106 +551,204 @@ export const updateTaskProgress = async (req: Request, res: Response, next: Next
       return res.status(401).json({ error: "User authentication required" });
     }
 
-    const task = await Task.findOne({ _id: taskId, userId });
+    // Use 'any' to allow assigning either Task or Chat document
+    let task: any = await Task.findOne({ _id: taskId, userId });
+    let isChat = false;
+    
+    // If not found as Task, try to find as Chat with isTask: true
+    if (!task) {
+      task = await Chat.findOne({ _id: taskId, userId, isTask: true });
+      if (task) {
+        isChat = true;
+      }
+    }
+
     if (!task) {
       return res.status(404).json({ error: "Task not found" });
     }
 
-    // Use type assertion to handle Mongoose document arrays
-    const taskDoc = task as any;
+    const taskDoc = task;
 
-    // Initialize progress if not exists
-    if (!taskDoc.progress) {
-      taskDoc.progress = {
-        completed: false,
-        score: 0,
-        totalQuestions: taskDoc.content?.questions?.length || 0,
-        correctAnswers: 0
-      };
-    }
+    // For Chat objects, we don't have a progress field, so we calculate it dynamically
+    if (isChat) {
+      // Update time spent in a custom field for chats
+      if (timeSpent !== undefined) {
+        taskDoc.timeSpent = timeSpent;
+      }
 
-    // Update total questions count if not set
-    if (taskDoc.progress.totalQuestions === 0 && taskDoc.content?.questions) {
-      taskDoc.progress.totalQuestions = taskDoc.content.questions.length;
-    }
-
-    if (questionId && isCorrect !== undefined) {
-      // Update specific question completion
-      const questions = taskDoc.content?.questions || [];
-      const questionIndex = questions.findIndex((q: any) =>
-        q.mcqId?.toString() === questionId || q._id?.toString() === questionId
-      );
-      
-      if (questionIndex !== -1) {
-        // Store the user's answer
-        if (userAnswer !== undefined) {
-          questions[questionIndex].userAnswer = userAnswer;
-        }
+      if (questionId && isCorrect !== undefined) {
+        // Update specific question completion
+        const questions = taskDoc.content?.questions || [];
+        const questionIndex = questions.findIndex((q: any) =>
+          q.mcqId?.toString() === questionId || q._id?.toString() === questionId
+        );
         
-        // Only update if not already completed to avoid double counting
-        if (!questions[questionIndex].completed) {
-          questions[questionIndex].completed = true;
-          if (isCorrect) {
-            taskDoc.progress.correctAnswers += 1;
+        if (questionIndex !== -1) {
+          // Store the user's answer
+          if (userAnswer !== undefined) {
+            questions[questionIndex].userAnswer = userAnswer;
+          }
+          
+          // Only update if not already completed to avoid double counting
+          if (!questions[questionIndex].completed) {
+            questions[questionIndex].completed = true;
           }
         }
       }
-    }
 
-    if (completed !== undefined) {
-      taskDoc.progress.completed = completed;
+      if (completed !== undefined && completed) {
+        taskDoc.completed = completed;
+        taskDoc.completedAt = new Date();
+      }
+
+      await taskDoc.save();
+
+      // Calculate progress for response
+      const totalQuestions = taskDoc.content?.questions?.length || 0;
+      const completedQuestions = taskDoc.content?.questions?.filter((q: any) => q.completed) || [];
+      const correctAnswers = completedQuestions.filter((q: any) => {
+        if (!q.userAnswer || !q.correctAnswer) return false;
+        const userAnswer = q.userAnswer.toString().trim();
+        const correctAnswer = q.correctAnswer.toString().replace(/[()]/g, "").trim();
+        return userAnswer === correctAnswer;
+      });
+
+      const progress = {
+        completed: taskDoc.completed || false,
+        completedAt: taskDoc.completedAt,
+        score: totalQuestions > 0 ? Math.round((correctAnswers.length / totalQuestions) * 100) : 0,
+        totalQuestions,
+        correctAnswers: correctAnswers.length,
+        timeSpent: taskDoc.timeSpent || 0,
+        pointsEarned: correctAnswers.length * 10
+      };
+
+      // Update user stats and check for achievements if task was completed
       if (completed) {
-        taskDoc.progress.completedAt = new Date();
-        // Calculate final score
-        taskDoc.progress.score = taskDoc.progress.totalQuestions > 0
-          ? Math.round((taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100)
-          : 0;
+        const accuracy = totalQuestions > 0 ? (correctAnswers.length / totalQuestions) * 100 : 0;
+        const isPerfectScore = accuracy === 100;
+        const studyTime = taskDoc.timeSpent || (totalQuestions * 2 || 5);
+        
+        await updateUserStatsAndAchievements(
+          userId,
+          true, 
+          accuracy,
+          studyTime,
+          isPerfectScore
+        );
       }
-    }
 
-    // Auto-complete task if all questions are answered
-    if (taskDoc.content?.questions && taskDoc.content.questions.length > 0) {
-      const completedQuestions = taskDoc.content.questions.filter((q: any) => q.completed).length;
-      if (completedQuestions === taskDoc.content.questions.length && !taskDoc.progress.completed) {
-        taskDoc.progress.completed = true;
-        taskDoc.progress.completedAt = new Date();
-        taskDoc.progress.score = taskDoc.progress.totalQuestions > 0
-          ? Math.round((taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100)
-          : 0;
+      // Convert to Task format for response
+      const responseTask = {
+        _id: taskDoc._id,
+        userId: taskDoc.userId,
+        title: `Study Task: ${taskDoc.query}`,
+        description: `Task created from: ${taskDoc.query}`,
+        type: 'learning',
+        section: 'AI Generated',
+        content: taskDoc.content,
+        progress,
+        priority: 'medium',
+        createdAt: taskDoc.timestamp,
+        updatedAt: taskDoc.timestamp
+      };
+
+      res.status(200).json({
+        message: "Task progress updated successfully",
+        task: responseTask
+      });
+    } else {
+      
+      if (!taskDoc.progress) {
+        taskDoc.progress = {
+          completed: false,
+          score: 0,
+          totalQuestions: taskDoc.content?.questions?.length || 0,
+          correctAnswers: 0,
+          timeSpent: 0,
+          pointsEarned: 0
+        };
       }
-    }
 
-    await taskDoc.save();
+      // Update total questions count if not set
+      if (taskDoc.progress.totalQuestions === 0 && taskDoc.content?.questions) {
+        taskDoc.progress.totalQuestions = taskDoc.content.questions.length;
+      }
 
-    // Update user stats and check for achievements if task was completed
-    if (taskDoc.progress.completed) {
-      const accuracy = taskDoc.progress.totalQuestions > 0
-        ? (taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100
-        : 0;
-      const isPerfectScore = accuracy === 100;
+      // Update time spent if provided
+      if (timeSpent !== undefined) {
+        taskDoc.progress.timeSpent = timeSpent;
+      }
+
+      if (questionId && isCorrect !== undefined) {
+        // Update specific question completion
+        const questions = taskDoc.content?.questions || [];
+        const questionIndex = questions.findIndex((q: any) =>
+          q.mcqId?.toString() === questionId || q._id?.toString() === questionId
+        );
+        
+        if (questionIndex !== -1) {
+          // Store the user's answer
+          if (userAnswer !== undefined) {
+            questions[questionIndex].userAnswer = userAnswer;
+          }
+          
+          // Only update if not already completed to avoid double counting
+          if (!questions[questionIndex].completed) {
+            questions[questionIndex].completed = true;
+            if (isCorrect) {
+              taskDoc.progress.correctAnswers += 1;
+              // Award 10 points per correct answer
+              taskDoc.progress.pointsEarned += 10;
+            }
+          }
+        }
+      }
+
+      if (completed !== undefined) {
+        taskDoc.progress.completed = completed;
+        if (completed) {
+          taskDoc.progress.completedAt = new Date();
+          // Calculate final score as percentage
+          taskDoc.progress.score = taskDoc.progress.totalQuestions > 0
+            ? Math.round((taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100)
+            : 0;
+        }
+      }
+
       
-      // Estimate study time (you can make this more sophisticated)
-      const estimatedStudyTime = taskDoc.content?.questions?.length * 2 || 5; // 2 minutes per question
-      
-      await updateUserStatsAndAchievements(
-        userId,
-        true, // task completed
-        accuracy,
-        estimatedStudyTime,
-        isPerfectScore
-      );
-    }
 
-    res.status(200).json({
-      message: "Task progress updated successfully",
-      task: taskDoc
-    });
+      await taskDoc.save();
+
+      // Update user stats and check for achievements if task was completed
+      if (taskDoc.progress?.completed) {
+        const accuracy = taskDoc.progress.totalQuestions > 0
+          ? (taskDoc.progress.correctAnswers / taskDoc.progress.totalQuestions) * 100
+          : 0;
+        const isPerfectScore = accuracy === 100;
+        
+        // Use actual time spent or estimate if not provided
+        const studyTime = taskDoc.progress.timeSpent || (taskDoc.content?.questions?.length * 2 || 5);
+        
+        await updateUserStatsAndAchievements(
+          userId,
+          true, // task completed
+          accuracy,
+          studyTime,
+          isPerfectScore
+        );
+      }
+
+      res.status(200).json({
+        message: "Task progress updated successfully",
+        task: taskDoc
+      });
+    }
   } catch (error) {
     console.error('Error updating task progress:', error);
     next(error);
   }
 };
-
 // Delete task
 export const deleteTask = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -667,8 +815,7 @@ export const getChatById = async (req: Request, res: Response, next: NextFunctio
 export const saveChatAsTask = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { chatId } = req.params;
-    const userId = req.user?.id; // Get user ID from authenticated user
-
+    const userId = req.user?.id; 
     if (!userId) {
       return res.status(401).json({ error: "User authentication required" });
     }

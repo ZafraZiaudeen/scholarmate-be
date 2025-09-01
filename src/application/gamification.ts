@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from "express";
+import { clerkClient } from "@clerk/express";
 import { Achievement, UserStats, IAchievement, IUserStats } from "../infrastructure/schemas/Achievement";
 
 // Achievement definitions
@@ -237,16 +238,27 @@ export const updateUserStats = async (req: Request, res: Response, next: NextFun
       userStats.currentStreak = 1;
     }
     
+    // Normalize numeric inputs to avoid string concatenation and ensure correct math
+    const tasksCompletedDelta = Math.max(0, Number(tasksCompleted) || 0);
+    const studyTimeDelta = Math.max(0, Number(studyTime) || 0);
+    const videosWatchedDelta = Math.max(0, Number(videosWatched) || 0);
+
     // Update stats
-    if (tasksCompleted) userStats.tasksCompleted += tasksCompleted;
-    if (studyTime) userStats.totalStudyTime += studyTime;
-    if (videosWatched) userStats.videosWatched += videosWatched;
-    if (perfectScore) userStats.perfectScores += 1;
+    if (tasksCompletedDelta > 0) userStats.tasksCompleted += tasksCompletedDelta;
+    if (studyTimeDelta > 0) userStats.totalStudyTime += studyTimeDelta;
+    if (videosWatchedDelta > 0) userStats.videosWatched += videosWatchedDelta;
+
+    // Normalize perfectScore to a strict boolean
+    const perfectScoreBool = perfectScore === true || perfectScore === 1 || perfectScore === "1" || perfectScore === "true";
+    if (perfectScoreBool) userStats.perfectScores += 1;
     
     // Update accuracy (running average)
-    if (accuracy !== undefined) {
-      const totalTasks = userStats.tasksCompleted;
-      userStats.averageAccuracy = ((userStats.averageAccuracy * (totalTasks - 1)) + accuracy) / totalTasks;
+    if (accuracy !== undefined && tasksCompletedDelta > 0) {
+      const previousTotalTasks = userStats.tasksCompleted - tasksCompletedDelta;
+      const newTotalTasks = userStats.tasksCompleted;
+      const previousAccuracyTotal = userStats.averageAccuracy * previousTotalTasks;
+      const aggregatedNewAccuracyTotal = Number(accuracy) * tasksCompletedDelta;
+      userStats.averageAccuracy = (previousAccuracyTotal + aggregatedNewAccuracyTotal) / newTotalTasks;
     }
     
     // Update weekly/monthly goals
@@ -256,7 +268,7 @@ export const updateUserStats = async (req: Request, res: Response, next: NextFun
       userStats.weeklyGoal.current = 0;
       userStats.weeklyGoal.weekStart = today;
     }
-    if (tasksCompleted) userStats.weeklyGoal.current += tasksCompleted;
+    if (tasksCompletedDelta > 0) userStats.weeklyGoal.current += tasksCompletedDelta;
     
     const monthStart = new Date(userStats.monthlyGoal.monthStart);
     const monthsDiff = today.getMonth() - monthStart.getMonth() + (12 * (today.getFullYear() - monthStart.getFullYear()));
@@ -264,7 +276,7 @@ export const updateUserStats = async (req: Request, res: Response, next: NextFun
       userStats.monthlyGoal.current = 0;
       userStats.monthlyGoal.monthStart = today;
     }
-    if (tasksCompleted) userStats.monthlyGoal.current += tasksCompleted;
+    if (tasksCompletedDelta > 0) userStats.monthlyGoal.current += tasksCompletedDelta;
     
     userStats.lastActivityDate = today;
     await userStats.save();
@@ -376,14 +388,58 @@ export const getLeaderboard = async (req: Request, res: Response, next: NextFunc
     if (type === 'level') sortField = 'level';
     if (type === 'tasks') sortField = 'tasksCompleted';
     
-    const leaderboard = await UserStats.find({})
+    // Get leaderboard data and remove duplicates
+    const leaderboardData = await UserStats.find({})
       .sort({ [sortField]: -1 })
-      .limit(parseInt(limit as string))
-      .select('userId totalPoints currentStreak level tasksCompleted averageAccuracy');
-    
+      .select('userId totalPoints currentStreak level tasksCompleted averageAccuracy')
+      .lean();
+
+    // Remove duplicates by userId (in case there are any)
+    const uniqueLeaderboard = leaderboardData.filter((entry, index, self) => 
+      index === self.findIndex(e => e.userId === entry.userId)
+    ).slice(0, parseInt(limit as string));
+
+    // Fetch user data from Clerk for all unique users
+    const enrichedLeaderboard = await Promise.all(
+      uniqueLeaderboard.map(async (entry) => {
+        try {
+          const user = await clerkClient.users.getUser(entry.userId);
+          const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim();
+          
+          return {
+            userId: entry.userId,
+            fullName: fullName || 'Unknown User',
+            firstName: user.firstName || 'Unknown',
+            lastName: user.lastName || 'User',
+            imageUrl: user.imageUrl || '',
+            totalPoints: entry.totalPoints,
+            currentStreak: entry.currentStreak,
+            level: entry.level,
+            tasksCompleted: entry.tasksCompleted,
+            averageAccuracy: entry.averageAccuracy
+          };
+        } catch (error) {
+          console.error(`Error fetching user ${entry.userId} from Clerk:`, error);
+          // Return entry with fallback user data if Clerk fetch fails
+          return {
+            userId: entry.userId,
+            fullName: `User ${entry.userId.slice(-4)}`,
+            firstName: 'Unknown',
+            lastName: 'User',
+            imageUrl: '',
+            totalPoints: entry.totalPoints,
+            currentStreak: entry.currentStreak,
+            level: entry.level,
+            tasksCompleted: entry.tasksCompleted,
+            averageAccuracy: entry.averageAccuracy
+          };
+        }
+      })
+    );
+
     res.json({
       success: true,
-      data: leaderboard
+      data: enrichedLeaderboard
     });
   } catch (error: any) {
     console.error("Error getting leaderboard:", error);

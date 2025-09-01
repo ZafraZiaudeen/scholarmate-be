@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 
 const chatSchema = new mongoose.Schema({
@@ -40,6 +39,17 @@ const chatSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  completed: {
+    type: Boolean,
+    default: false
+  },
+  completedAt: {
+    type: Date
+  },
+  timeSpent: {
+    type: Number,
+    default: 0
+  },
   content: {
     bookContent: {
       bookId: mongoose.Schema.Types.ObjectId,
@@ -57,7 +67,8 @@ const chatSchema = new mongoose.Schema({
       completed: {
         type: Boolean,
         default: false
-      }
+      },
+      userAnswer: String // Store the user's selected answer
     }]
   }
 });

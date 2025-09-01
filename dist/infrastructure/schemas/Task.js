@@ -44,7 +44,8 @@ const taskSchema = new mongoose_1.default.Schema({
                 completed: {
                     type: Boolean,
                     default: false
-                }
+                },
+                userAnswer: String // Store the user's selected answer
             }]
     },
     progress: {
@@ -62,6 +63,14 @@ const taskSchema = new mongoose_1.default.Schema({
             default: 0
         },
         correctAnswers: {
+            type: Number,
+            default: 0
+        },
+        timeSpent: {
+            type: Number,
+            default: 0
+        },
+        pointsEarned: {
             type: Number,
             default: 0
         }

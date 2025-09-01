@@ -61,6 +61,14 @@ const taskSchema = new mongoose.Schema({
     correctAnswers: {
       type: Number,
       default: 0
+    },
+    timeSpent: {
+      type: Number,
+      default: 0
+    },
+    pointsEarned: {
+      type: Number,
+      default: 0
     }
   },
   dueDate: Date,

@@ -16,6 +16,11 @@ const openRouter_1 = __importDefault(require("./api/openRouter"));
 const paper_1 = __importDefault(require("./api/paper"));
 const user_1 = __importDefault(require("./api/user"));
 const contact_1 = __importDefault(require("./api/contact"));
+const analytics_1 = __importDefault(require("./api/analytics"));
+const settings_1 = __importDefault(require("./api/settings"));
+const youtube_1 = __importDefault(require("./api/youtube"));
+const gamification_1 = __importDefault(require("./api/gamification"));
+const videoManagement_1 = __importDefault(require("./api/videoManagement"));
 const user_extraction_middleware_1 = require("./api/middlewares/user-extraction-middleware");
 // Create an Express instance
 const app = (0, express_1.default)();
@@ -32,6 +37,11 @@ app.use("/api/openrouter", openRouter_1.default);
 app.use("/api/paper", paper_1.default);
 app.use("/api/user", user_1.default);
 app.use("/api/contact", contact_1.default);
+app.use("/api/analytics", analytics_1.default);
+app.use("/api/settings", settings_1.default);
+app.use("/api/youtube", youtube_1.default);
+app.use("/api/gamification", gamification_1.default);
+app.use("/api/video-management", videoManagement_1.default);
 app.use(global_error_handling_middleware_1.default);
 // Define the port to run the server
 const PORT = 8000;
