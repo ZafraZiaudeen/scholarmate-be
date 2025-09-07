@@ -10,12 +10,24 @@ const mcqRouter = express.Router();
 
 
 // Put specific routes before parameterized routes
-mcqRouter.get("/", getAllMCQs);
-mcqRouter.post("/", createMCQ);
-mcqRouter.post("/embeddings/create", createEmbeddings);
+mcqRouter.get("/", (req, res, next) => {
+  getAllMCQs(req, res, next).catch(next);
+});
+mcqRouter.post("/", (req, res, next) => {
+  createMCQ(req, res, next).catch(next);
+});
+mcqRouter.post("/embeddings/create", (req, res, next) => {
+  createEmbeddings(req, res, next).catch(next);
+});
 
-mcqRouter.get("/:id", getMCQById);
-mcqRouter.put("/:id", updateMCQ);
-mcqRouter.delete("/:id", deleteMCQ);
+mcqRouter.get("/:id", (req, res, next) => {
+  getMCQById(req, res, next).catch(next);
+});
+mcqRouter.put("/:id", (req, res, next) => {
+  updateMCQ(req, res, next).catch(next);
+});
+mcqRouter.delete("/:id", (req, res, next) => {
+  deleteMCQ(req, res, next).catch(next);
+});
 
 export default mcqRouter;

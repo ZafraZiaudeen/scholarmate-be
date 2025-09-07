@@ -32,7 +32,9 @@ paperRouter.post('/upload',
     { name: 'paper', maxCount: 1 },
     { name: 'answerSheet', maxCount: 1 }
   ]),
-  uploadPaper
+  (req, res, next) => {
+    uploadPaper(req, res, next).catch(next);
+  }
 );
 
 paperRouter.patch('/:id',
@@ -41,17 +43,27 @@ paperRouter.patch('/:id',
     { name: 'paper', maxCount: 1 },
     { name: 'answerSheet', maxCount: 1 }
   ]),
-  updatePaper
+  (req, res, next) => {
+    updatePaper(req, res, next).catch(next);
+  }
 );
 
 paperRouter.delete('/:id',
   isAdmin,
-  deletePaper
+  (req, res, next) => {
+    deletePaper(req, res, next).catch(next);
+  }
 );
 
 // Public routes (accessible by students and admins)
-paperRouter.get('/', getAllPapers);
-paperRouter.get('/download/:fileId', downloadFile);
-paperRouter.get('/:id', getPaperById);
+paperRouter.get('/', (req, res, next) => {
+  getAllPapers(req, res, next).catch(next);
+});
+paperRouter.get('/download/:fileId', (req, res, next) => {
+  downloadFile(req, res, next).catch(next);
+});
+paperRouter.get('/:id', (req, res, next) => {
+  getPaperById(req, res, next).catch(next);
+});
 
 export default paperRouter;

@@ -178,7 +178,7 @@ export const updateContactStatus = async (req: Request, res: Response, next: Nex
         originalSubject: contact.subject,
         originalMessage: contact.message,
         adminResponse: adminResponse,
-        adminName: "Scholarmate Support Team" // You might want to get admin name from user service
+        adminName: "Scholarmate Support Team" 
       }).catch(error => {
         console.error('Failed to send response email to user:', error);
       });

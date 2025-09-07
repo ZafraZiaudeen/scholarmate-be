@@ -6,6 +6,7 @@ import { clerkMiddleware } from "@clerk/express";
 
 import cors from "cors";
 import globalErrorHandlingMiddleware from "./api/middlewares/global-error-handling-middleware";
+import { initializeErrorHandlers } from "./api/middlewares/async-error-handler";
 import mcqRouter from "./api/mcs";
 import bookRouter from "./api/book";
 import taskRouter from "./api/task";
@@ -30,6 +31,9 @@ app.use(cors());
 app.use(extractUserInfo);
 
 connectDB();
+
+// Initialize error handlers
+initializeErrorHandlers();
 
 app.use("/api/book", bookRouter);
 app.use("/api/mcq", mcqRouter);

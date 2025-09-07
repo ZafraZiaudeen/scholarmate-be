@@ -34,9 +34,14 @@ class SentenceTransformerEmbeddings extends Embeddings {
 export const getAllBooks = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const books = await Book.find();
-    res.status(200).json(books);
+    res.status(200).json({
+      success: true,
+      data: books,
+      count: books.length
+    });
     return;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error fetching books:', error);
     next(error);
   }
 };
@@ -44,13 +49,24 @@ export const getAllBooks = async (req: Request, res: Response, next: NextFunctio
 export const getBookById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const bookId = req.params.id;
+    
+    // Validate ObjectId format
+    if (!bookId.match(/^[0-9a-fA-F]{24}$/)) {
+      throw new ValidationError("Invalid book ID format");
+    }
+    
     const book = await Book.findById(bookId);
     if (!book) {
       throw new NotFoundError("Book not found");
     }
-    res.status(200).json(book);
+    
+    res.status(200).json({
+      success: true,
+      data: book
+    });
     return;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error fetching book by ID:', error);
     next(error);
   }
 };
@@ -59,43 +75,67 @@ export const createBook = async (req: Request, res: Response, next: NextFunction
   try {
     const book = CreateBookDTO.safeParse(req.body);
     if (!book.success) {
-      throw new ValidationError(book.error.message);
+      throw new ValidationError("Invalid book data", book.error.errors);
     }
 
     const { title, pageNumber, content, chapter } = book.data;
 
+    // Validate required fields
+    if (!title || !pageNumber || !content) {
+      throw new ValidationError("Title, page number, and content are required");
+    }
+
     // Check if book page already exists
     const existingBook = await Book.findOne({ title, pageNumber });
     if (existingBook) {
-      res.status(200).json({ message: `Book page ${pageNumber} already exists`, book: existingBook });
+      res.status(200).json({ 
+        success: true,
+        message: `Book page ${pageNumber} already exists`, 
+        data: existingBook 
+      });
       return;
     }
 
-    await Book.create({
+    const newBook = await Book.create({
       title,
       pageNumber,
       content,
       chapter: chapter || "Web Designing Using Multimedia",
     });
 
-    res.status(201).json({ message: `Book page ${pageNumber} created successfully` });
+    res.status(201).json({ 
+      success: true,
+      message: `Book page ${pageNumber} created successfully`,
+      data: newBook
+    });
     return;
   } catch (error: any) {
-    if (error.code === 11000) {
-      res.status(409).json({ message: "Duplicate entry detected, skipping", error: error.message });
-    } else {
-      next(error);
-    }
+    console.error('Error creating book:', error);
+    next(error);
   }
 };
 
 export const deleteBook = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const bookId: string = req.params.id;
-    await Book.findByIdAndDelete(bookId);
-    res.status(200).send();
+    
+    // Validate ObjectId format
+    if (!bookId.match(/^[0-9a-fA-F]{24}$/)) {
+      throw new ValidationError("Invalid book ID format");
+    }
+    
+    const deletedBook = await Book.findByIdAndDelete(bookId);
+    if (!deletedBook) {
+      throw new NotFoundError("Book not found");
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: "Book deleted successfully"
+    });
     return;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error deleting book:', error);
     next(error);
   }
 };
@@ -105,14 +145,29 @@ export const updateBook = async (req: Request, res: Response, next: NextFunction
     const bookId: string = req.params.id;
     const updatedBook = req.body;
 
-    if (!updatedBook.title || !updatedBook.pageNumber || !updatedBook.content) {
-      throw new ValidationError("Invalid Book data");
+    // Validate ObjectId format
+    if (!bookId.match(/^[0-9a-fA-F]{24}$/)) {
+      throw new ValidationError("Invalid book ID format");
     }
 
-    await Book.findByIdAndUpdate(bookId, updatedBook);
-    res.status(200).send();
+    // Validate required fields
+    if (!updatedBook.title || !updatedBook.pageNumber || !updatedBook.content) {
+      throw new ValidationError("Title, page number, and content are required");
+    }
+
+    const book = await Book.findByIdAndUpdate(bookId, updatedBook, { new: true });
+    if (!book) {
+      throw new NotFoundError("Book not found");
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Book updated successfully",
+      data: book
+    });
     return;
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error updating book:', error);
     next(error);
   }
 };

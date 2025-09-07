@@ -25,7 +25,7 @@ async function callOpenRouter(inputData: any, retries = 3, delay = 3000) {
 }
 
 // POST endpoint to interact with OpenRouter model
-openRouter.post("/", async (req, res) => { 
+openRouter.post("/", async (req, res, next) => { 
     const inputData = req.body;
 
     try {
@@ -33,7 +33,7 @@ openRouter.post("/", async (req, res) => {
         res.json(response.data);
     } catch (error) {
         console.error("Error calling OpenRouter:", error);
-        res.status(500).json({ error: "Failed to call OpenRouter" });
+        next(error); // Pass error to global error handler
     }
 });
 

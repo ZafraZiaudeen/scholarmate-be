@@ -1,7 +1,8 @@
-class ValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ValidationError";
+import { ValidationError as BaseValidationError } from './custom-errors';
+
+class ValidationError extends BaseValidationError {
+  constructor(message: string = "Validation failed", details?: any) {
+    super(message, details);
   }
 }
 
